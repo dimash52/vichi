@@ -7,10 +7,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
-# =========================
-# Problem definition
-# =========================
-
 def u_exact(x, y):
     return np.sin(x) * np.sin(y ** 2)
 
@@ -22,10 +18,6 @@ def f_rhs(x, y):
 def g_boundary(x, y):
     return u_exact(x, y)
 
-
-# =========================
-# Domain utilities
-# =========================
 
 def in_domain(i, j, n):
     return 0 <= i <= n and 0 <= j <= n and j <= i + n // 2
@@ -49,10 +41,6 @@ def build_interior_nodes(n):
 
 
 def build_F(n, nodes):
-    """
-    Правая часть для НЕСКАЛИРОВАННОЙ матрицы A:
-        A u = f + boundary/h^2
-    """
     h = 1.0 / n
     h2 = h * h
     F = np.zeros(len(nodes), dtype=float)
@@ -72,10 +60,6 @@ def build_F(n, nodes):
 
 
 def apply_A_vec(z, n, nodes, idx):
-    """
-    Действие НЕСКАЛИРОВАННОЙ матрицы A:
-        A = (1/h^2) * stencil
-    """
     h = 1.0 / n
     inv_h2 = 1.0 / (h * h)
 
@@ -212,10 +196,6 @@ def minimal_residual_matrix_free(n, tol=1e-10, maxiter=50000, progress_callback=
     return u, maxiter, nodes, idx
 
 
-# =========================
-# Spectral estimates: power method
-# =========================
-
 def dominant_eigenpair(Aop, tol=1e-12, maxiter=20000, seed=12345, stop_callback=None, ui_pump=None):
     rng = np.random.default_rng(seed)
     x = rng.normal(size=Aop.shape[0])
@@ -296,10 +276,6 @@ def extreme_eigenvalues(n, tol=1e-12, stop_callback=None, ui_pump=None):
     return lam_min, lam_max, it_min, it_max
 
 
-# =========================
-# GUI widgets
-# =========================
-
 class MethodResultBox:
     def __init__(self, master, title):
         self.frame = ttk.LabelFrame(master, text=title, padding=8)
@@ -327,10 +303,6 @@ class MethodResultBox:
     def set_summary(self, text):
         self.summary_var.set(text)
 
-
-# =========================
-# Main application
-# =========================
 
 class App(tk.Tk):
     def __init__(self):
@@ -409,7 +381,7 @@ class App(tk.Tk):
 
         ttk.Label(params, text="h = 1/n:").grid(row=1,
                                                 column=0, sticky="w", pady=4)
-        ttk.Entry(params, textvariable=self.h_var, width=12, state="readonly").grid(
+        ttk.Label(params, textvariable=self.h_var, width=12, state="readonly").grid(
             row=1, column=1, sticky="w", padx=5, pady=4
         )
 
@@ -664,9 +636,9 @@ class App(tk.Tk):
                     err = inf_error_against_exact(
                         n, nodes_local, idx_local, z_current)
                     box.set_summary(
-                        f"Итерация: {it}, ||Δu||∞ = {step_norm:.6e}")
+                        f"Итерация: {it}, ||Δu||∞ , ||u-u_exact||∞ ")
                     box.write(
-                        f"it = {it}, ||Δu||∞ = {step_norm:.6e}\n")
+                        f"it = {it}, \t {step_norm:.6e}, \t {err:.6e}\n")
                     self._render_solution(reconstruct_grid(
                         n, nodes_local, idx_local, z_current), n, method, it)
                     self._set_status(f"Jacobi: итерация {it}")
@@ -684,10 +656,10 @@ class App(tk.Tk):
                 err = inf_error_against_exact(n, nodes, idx, z)
                 U = reconstruct_grid(n, nodes, idx, z)
                 self._render_solution(U, n, method, iters)
-                box.set_summary(f"Готово | итераций: {iters}")
+                box.set_summary(f"Готово. ||Δu||∞ , ||u-u_exact||∞ ")
                 box.write(f"Итог: итераций = {iters}\n")
                 self._write_main(
-                    f"[Jacobi] итераций = {iters}")
+                    f"[Jacobi] итераций = {iters}, ||u-u_exact||∞ = {err:.6e}")
                 self.info_var.set(f"Jacobi завершён. N={n}, h={h:.6g}.")
                 self._set_status("Jacobi завершён")
 
@@ -706,9 +678,9 @@ class App(tk.Tk):
                             f"it = {it}, ||Δu||∞ = {step_norm:.6e}\n")
                     else:
                         box.set_summary(
-                            f"Итерация: {it}, ||r||∞ = {residual_norm:.6e}")
+                            f"Итерация: {it}, || r ||∞ , ||u - u_exact||∞ ")
                         box.write(
-                            f"it = {it}, ||r||∞ = {residual_norm:.6e}\n")
+                            f"it = {it}, \t {residual_norm:.6e}, \t {err:.6e}\n")
                     self._render_solution(reconstruct_grid(
                         n, nodes_local, idx_local, z_current), n, method, it)
                     self._set_status(f"MR: итерация {it}")
@@ -726,10 +698,10 @@ class App(tk.Tk):
                 err = inf_error_against_exact(n, nodes, idx, z)
                 U = reconstruct_grid(n, nodes, idx, z)
                 self._render_solution(U, n, method, iters)
-                box.set_summary(f"Готово | итераций: {iters}")
+                box.set_summary(f"Готово. || r ||∞ , ||u-u_exact||∞ ")
                 box.write(f"Итог: итераций = {iters}\n")
                 self._write_main(
-                    f"[MR] итераций = {iters}")
+                    f"[MR] итераций = {iters}, ||u-u_exact||∞ = {err:.6e}")
                 self.info_var.set(f"MR завершён. N={n}, h={h:.6g}.")
                 self._set_status("MR завершён")
 
