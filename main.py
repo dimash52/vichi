@@ -7,50 +7,90 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
+# Точное решение задачи. Оно нужно для задания граничных условий
+# и для оценки ошибки численного решения.
 def u_exact(x, y):
     return np.sin(x) * np.sin(y ** 2)
 
 
+# Правая часть дифференциального уравнения.
+# В численной схеме она используется в узлах внутри области.
 def f_rhs(x, y):
     return np.sin(x) * (np.sin(y) ** 2) * (0.7 + 4.4 * y * y) - 2.0 * np.sin(x) * (np.cos(y) ** 2)
 
 
+# Граничное условие Дирихле.
+# На границе значение решения считается известным и берётся из точного решения.
 def g_boundary(x, y):
     return u_exact(x, y)
 
 
+# Проверяет, принадлежит ли узел (i, j) расчётной области.
+#
+# Сетка задана на квадрате 0 <= i, j <= n, но сама область срезана
+# дополнительным условием j <= i + n // 2.
 def in_domain(i, j, n):
     return 0 <= i <= n and 0 <= j <= n and j <= i + n // 2
 
 
+# Проверяет, является ли узел граничным.
+#
+# Граница состоит из внешних сторон квадрата и наклонной границы
+# j = i + n // 2.
 def is_boundary(i, j, n):
     return in_domain(i, j, n) and (
         i == 0 or i == n or j == 0 or j == n or j == i + n // 2
     )
 
 
+# Формирует список внутренних узлов области.
+#
+# nodes — список пар (i, j), соответствующих неизвестным значениям решения.
+# idx — словарь, который переводит координаты узла (i, j)
+#       в номер компоненты в одномерном векторе неизвестных.
 def build_interior_nodes(n):
     nodes = []
     idx = {}
+
     for i in range(n + 1):
         for j in range(n + 1):
             if in_domain(i, j, n) and not is_boundary(i, j, n):
                 idx[(i, j)] = len(nodes)
                 nodes.append((i, j))
+
     return nodes, idx
 
 
+# Строит правую часть системы A u = F.
+#
+# Внутренние неизвестные хранятся в одномерном векторе.
+# Значения на границе не являются неизвестными, поэтому их вклад
+# переносится в правую часть F.
 def build_F(n, nodes):
     h = 1.0 / n
     h2 = h * h
+
     F = np.zeros(len(nodes), dtype=float)
 
     for k, (i, j) in enumerate(nodes):
         x, y = i * h, j * h
+
+        # Основной вклад правой части из исходного уравнения.
         val = f_rhs(x, y)
 
-        for di, dj, c in [(1, 0, 0.7), (-1, 0, 0.7), (0, 1, 1.1), (0, -1, 1.1)]:
+        # Соседние узлы в 5-точечном шаблоне:
+        # по x коэффициент 0.7, по y коэффициент 1.1.
+        for di, dj, c in [
+            (1, 0, 0.7),
+            (-1, 0, 0.7),
+            (0, 1, 1.1),
+            (0, -1, 1.1),
+        ]:
             ii, jj = i + di, j + dj
+
+            # Если сосед — граничный узел, его значение известно.
+            # В матрицу A он не попадает, поэтому переносим его вклад
+            # в правую часть.
             if in_domain(ii, jj, n) and is_boundary(ii, jj, n):
                 val += (c / h2) * g_boundary(ii * h, jj * h)
 
@@ -60,54 +100,161 @@ def build_F(n, nodes):
 
 
 def apply_A_vec(z, n, nodes, idx):
+    """
+    Применяет матрицу A к вектору z без явного построения самой матрицы.
+
+    Это матрично-свободная реализация операции:
+
+        y = A z
+
+    Матрица A соответствует конечно-разностной аппроксимации
+    эллиптического оператора с разными коэффициентами по x и y.
+
+    Для внутреннего узла (i, j) используется шаблон:
+
+        (A z)_{i,j} =
+            1 / h^2 * (
+                3.6 * z_{i,j}
+                - 0.7 * z_{i+1,j}
+                - 0.7 * z_{i-1,j}
+                - 1.1 * z_{i,j+1}
+                - 1.1 * z_{i,j-1}
+            )
+
+    Здесь:
+
+        3.6 = 2 * 0.7 + 2 * 1.1
+
+    То есть диагональный коэффициент равен сумме коэффициентов
+    при четырёх соседях.
+
+    Важный момент:
+    граничные значения в этой функции не учитываются, потому что они
+    уже перенесены в правую часть F в функции build_F().
+    Поэтому apply_A_vec работает только с внутренними неизвестными.
+    """
+
+    # Шаг сетки h = 1 / n.
     h = 1.0 / n
+
+    # Множитель 1 / h^2 возникает из конечно-разностной аппроксимации
+    # вторых производных.
     inv_h2 = 1.0 / (h * h)
 
+    # y — результат умножения A на z.
+    # Размер y такой же, как у z, потому что A действует только
+    # на внутренние неизвестные.
     y = np.zeros_like(z)
+
+    # Перебираем все внутренние узлы.
+    # k — номер узла в одномерном векторе z,
+    # (i, j) — его координаты на двумерной сетке.
     for k, (i, j) in enumerate(nodes):
+
+        # Диагональный вклад матрицы:
+        #
+        # A[k, k] = 3.6 / h^2.
+        #
+        # Пока множитель 1 / h^2 не применяем, чтобы не умножать
+        # каждое слагаемое отдельно.
         val = 3.6 * z[k]
 
-        for di, dj, c in [(1, 0, 0.7), (-1, 0, 0.7), (0, 1, 1.1), (0, -1, 1.1)]:
+        # Перебираем четырёх соседей текущего узла.
+        #
+        # di, dj — смещение к соседнему узлу.
+        # c — коэффициент при этом соседе:
+        #     0.7 для направления x,
+        #     1.1 для направления y.
+        for di, dj, c in [
+            (1, 0, 0.7),
+            (-1, 0, 0.7),
+            (0, 1, 1.1),
+            (0, -1, 1.1),
+        ]:
             ii, jj = i + di, j + dj
+
+            # В матричном операторе учитываем только внутренних соседей.
+            #
+            # Если сосед находится на границе, его значение известно
+            # из условия Дирихле и уже было добавлено в F в build_F().
+            #
+            # Если сосед вообще вне области, он также не участвует
+            # в уравнении для данного узла.
             if in_domain(ii, jj, n) and not is_boundary(ii, jj, n):
+
+                # idx[(ii, jj)] даёт номер соседнего узла
+                # в одномерном векторе z.
+                #
+                # Внедиагональный коэффициент матрицы:
+                #
+                # A[k, idx[(ii, jj)]] = -c / h^2.
                 val -= c * z[idx[(ii, jj)]]
 
+        # После суммирования всех вкладов умножаем результат на 1 / h^2.
         y[k] = inv_h2 * val
 
     return y
 
 
+# Восстанавливает двумерную сетку решения U из вектора внутренних неизвестных z.
+#
+# Внутри области:
+#   - на границе ставятся известные значения g_boundary;
+#   - во внутренних узлах берутся значения из z.
+#
+# Вне области остаётся np.nan, чтобы эти точки не отображались на графике.
 def reconstruct_grid(n, nodes, idx, z):
     h = 1.0 / n
+
     U = np.full((n + 1, n + 1), np.nan, dtype=float)
+
     for i in range(n + 1):
         for j in range(n + 1):
             if not in_domain(i, j, n):
                 continue
+
             x, y = i * h, j * h
+
             if is_boundary(i, j, n):
                 U[i, j] = g_boundary(x, y)
             else:
                 U[i, j] = z[idx[(i, j)]]
+
     return U
 
 
+# Строит сетку точного решения.
+# Используется только для сравнения и вычисления ошибки.
 def exact_grid(n):
     h = 1.0 / n
+
     U = np.full((n + 1, n + 1), np.nan, dtype=float)
+
     for i in range(n + 1):
         for j in range(n + 1):
             if in_domain(i, j, n):
                 U[i, j] = u_exact(i * h, j * h)
+
     return U
 
 
+# Считает максимальную ошибку по норме C:
+#
+#   ||u_num - u_exact||_inf
+#
+# np.nanmax игнорирует точки вне области, которые были заполнены np.nan.
 def inf_error_against_exact(n, nodes, idx, z):
     U_num = reconstruct_grid(n, nodes, idx, z)
     U_ex = exact_grid(n)
+
     return float(np.nanmax(np.abs(U_num - U_ex)))
 
 
+# Создаёт объект LinearOperator для матрицы A.
+#
+# Матрица явно не строится.
+# Вместо этого scipy будет вызывать функцию mv(v),
+# которая возвращает результат A @ v через apply_A_vec().
 def build_operator(n):
     nodes, idx = build_interior_nodes(n)
     m = len(nodes)
@@ -126,13 +273,31 @@ class _StopRequested(Exception):
     pass
 
 
-def jacobi_matrix_free(n, tol=1e-10, maxiter=50000, progress_callback=None, update_every=50, stop_callback=None):
+# Метод Якоби для системы A u = F.
+#
+# Вектор u хранит только внутренние неизвестные.
+# На каждой итерации новое значение узла считается через старые значения
+# соседних узлов.
+def jacobi_matrix_free(
+    n,
+    tol=1e-10,
+    maxiter=50000,
+    progress_callback=None,
+    update_every=50,
+    stop_callback=None,
+):
     nodes, idx = build_interior_nodes(n)
     F = build_F(n, nodes)
+
     h = 1.0 / n
     h2 = h * h
 
+    # Начальное приближение.
     u = np.zeros(len(nodes), dtype=float)
+
+    # Вектор для нового слоя итерации.
+    # В методе Якоби важно не перезаписывать u сразу,
+    # потому что все новые значения должны считаться по старому вектору.
     u_new = np.zeros_like(u)
 
     for it in range(1, maxiter + 1):
@@ -143,51 +308,97 @@ def jacobi_matrix_free(n, tol=1e-10, maxiter=50000, progress_callback=None, upda
             sum_x = 0.0
             sum_y = 0.0
 
-            for di, dj, c in [(1, 0, 0.7), (-1, 0, 0.7), (0, 1, 1.1), (0, -1, 1.1)]:
+            # Собираем вклад внутренних соседей.
+            for di, dj, c in [
+                (1, 0, 0.7),
+                (-1, 0, 0.7),
+                (0, 1, 1.1),
+                (0, -1, 1.1),
+            ]:
                 ii, jj = i + di, j + dj
+
                 if in_domain(ii, jj, n) and not is_boundary(ii, jj, n):
                     if di != 0:
                         sum_x += c * u[idx[(ii, jj)]]
                     else:
                         sum_y += c * u[idx[(ii, jj)]]
 
+            # Из уравнения
+            #
+            #   3.6 * u_ij - сумма_соседей = h^2 * F_ij
+            #
+            # выражаем новое значение u_ij.
             u_new[k] = (sum_x + sum_y + h2 * F[k]) / 3.6
 
+        # Критерий остановки — изменение решения на текущей итерации.
         step_norm = float(np.linalg.norm(u_new - u, ord=np.inf))
+
         if progress_callback is not None and update_every > 0 and (it == 1 or it % update_every == 0):
             progress_callback(it, u_new.copy(), step_norm, None)
 
         if step_norm < tol:
             return u_new, it, nodes, idx
 
+        # Переход к следующей итерации.
         u[:] = u_new[:]
 
     return u, maxiter, nodes, idx
 
 
-def minimal_residual_matrix_free(n, tol=1e-10, maxiter=50000, progress_callback=None, update_every=50, stop_callback=None):
+# Метод минимальных невязок для системы A u = F.
+#
+# На каждой итерации вычисляется невязка:
+#
+#   r = F - A u
+#
+# Затем решение уточняется в направлении r:
+#
+#   u_new = u + tau * r
+#
+# Параметр tau выбирается так, чтобы минимизировать норму невязки
+# на текущем шаге.
+def minimal_residual_matrix_free(
+    n,
+    tol=1e-10,
+    maxiter=50000,
+    progress_callback=None,
+    update_every=50,
+    stop_callback=None,
+):
     nodes, idx = build_interior_nodes(n)
     F = build_F(n, nodes)
+
+    # Начальное приближение.
     u = np.zeros(len(nodes), dtype=float)
 
     for it in range(1, maxiter + 1):
         if stop_callback is not None and stop_callback():
             raise _StopRequested()
 
+        # Применяем оператор A к текущему приближению.
         Au = apply_A_vec(u, n, nodes, idx)
+
+        # Невязка показывает, насколько текущее u не удовлетворяет системе.
         r = F - Au
+
         residual_norm = float(np.linalg.norm(r, ord=np.inf))
         if residual_norm < tol:
             return u, it, nodes, idx
 
+        # Для вычисления оптимального tau нужен вектор A r.
         Ar = apply_A_vec(r, n, nodes, idx)
+
         denom = float(Ar @ Ar)
         if denom == 0.0:
             return u, it, nodes, idx
 
+        # Оптимальный шаг метода минимальных невязок.
         tau = float(Ar @ r) / denom
+
+        # Поправка к решению.
         du = tau * r
         u = u + du
+
         step_norm = float(np.linalg.norm(du, ord=np.inf))
 
         if progress_callback is not None and update_every > 0 and (it == 1 or it % update_every == 0):
@@ -196,28 +407,56 @@ def minimal_residual_matrix_free(n, tol=1e-10, maxiter=50000, progress_callback=
     return u, maxiter, nodes, idx
 
 
-def dominant_eigenpair(Aop, tol=1e-12, maxiter=20000, seed=12345, stop_callback=None, ui_pump=None):
+# Степенной метод для поиска доминирующего собственного значения
+# линейного оператора Aop.
+#
+# Доминирующее собственное значение — то, которое имеет наибольший модуль.
+def dominant_eigenpair(
+    Aop,
+    tol=1e-12,
+    maxiter=20000,
+    seed=12345,
+    stop_callback=None,
+    ui_pump=None,
+):
     rng = np.random.default_rng(seed)
+
+    # Начальный случайный вектор.
     x = rng.normal(size=Aop.shape[0])
+
+    # Нормировка начального вектора.
     nx = np.linalg.norm(x)
     if nx == 0.0:
         x = np.ones(Aop.shape[0], dtype=float)
         nx = np.linalg.norm(x)
+
     x /= nx
 
+    # Начальное приближение собственного значения через отношение Рэлея.
     lam = float(x @ (Aop @ x))
 
     for it in range(1, maxiter + 1):
         if stop_callback is not None and stop_callback():
             raise _StopRequested()
 
+        # Основной шаг степенного метода.
         y = Aop @ x
+
         ny = float(np.linalg.norm(y))
         if ny == 0.0:
             raise RuntimeError("Power method failed: zero vector encountered.")
 
+        # Нормируем новый вектор, чтобы избежать переполнения.
         x = y / ny
+
+        # Уточняем собственное значение.
         lam = float(x @ (Aop @ x))
+
+        # Невязка собственного уравнения:
+        #
+        #   A x - lambda x
+        #
+        # Если она мала, пара lambda, x найдена достаточно точно.
         resid = float(np.linalg.norm((Aop @ x) - lam * x, ord=np.inf))
 
         if ui_pump is not None and it % 5 == 0:
@@ -229,23 +468,63 @@ def dominant_eigenpair(Aop, tol=1e-12, maxiter=20000, seed=12345, stop_callback=
     return lam, x, maxiter
 
 
-def power_method_max(Aop, tol=1e-12, maxiter=20000, seed=12345, stop_callback=None, ui_pump=None):
+# Поиск максимального собственного значения матрицы A.
+def power_method_max(
+    Aop,
+    tol=1e-12,
+    maxiter=20000,
+    seed=12345,
+    stop_callback=None,
+    ui_pump=None,
+):
     lam, vec, it = dominant_eigenpair(
-        Aop, tol=tol, maxiter=maxiter, seed=seed,
-        stop_callback=stop_callback, ui_pump=ui_pump
+        Aop,
+        tol=tol,
+        maxiter=maxiter,
+        seed=seed,
+        stop_callback=stop_callback,
+        ui_pump=ui_pump,
     )
+
     return lam, vec, it
 
 
+# Применяет оператор B = I - tau * A к вектору v.
+#
+# Такой оператор используется для поиска минимального собственного значения A
+# через сдвиг спектра.
 def apply_B_vec(v, n, nodes, idx, tau):
     return v - tau * apply_A_vec(v, n, nodes, idx)
 
 
-def power_method_min_via_shift(n, tol=1e-12, maxiter=20000, seed=54321, stop_callback=None, ui_pump=None):
+# Оценивает минимальное собственное значение A через оператор
+#
+#   B = I - tau A.
+#
+# Если lambda — собственное значение A, то соответствующее собственное значение B:
+#
+#   mu = 1 - tau * lambda.
+#
+# Поэтому после нахождения доминирующего собственного значения mu для B
+# можно восстановить lambda:
+#
+#   lambda = (1 - mu) / tau.
+def power_method_min_via_shift(
+    n,
+    tol=1e-12,
+    maxiter=20000,
+    seed=54321,
+    stop_callback=None,
+    ui_pump=None,
+):
     nodes, idx = build_interior_nodes(n)
     m = len(nodes)
 
     h = 1.0 / n
+
+    # Параметр сдвига.
+    # Он должен быть достаточно малым, чтобы оператор B был пригоден
+    # для поиска минимального собственного значения A.
     tau = (h * h) / 8.0
 
     def mv(v):
@@ -254,23 +533,39 @@ def power_method_min_via_shift(n, tol=1e-12, maxiter=20000, seed=54321, stop_cal
     Bop = LinearOperator((m, m), matvec=mv, dtype=float)
 
     lam_B, vec_B, it_B = dominant_eigenpair(
-        Bop, tol=tol, maxiter=maxiter, seed=seed,
-        stop_callback=stop_callback, ui_pump=ui_pump
+        Bop,
+        tol=tol,
+        maxiter=maxiter,
+        seed=seed,
+        stop_callback=stop_callback,
+        ui_pump=ui_pump,
     )
 
+    # Переход от собственного значения B к собственному значению A.
     lam_min = (1.0 - lam_B) / tau
+
     return lam_min, vec_B, it_B
 
 
+# Находит оценки минимального и максимального собственных значений матрицы A.
+#
+# lambda_max ищется напрямую степенным методом.
+# lambda_min ищется через сдвинутый оператор B = I - tau A.
 def extreme_eigenvalues(n, tol=1e-12, stop_callback=None, ui_pump=None):
     Aop, _, _ = build_operator(n)
 
     lam_max, vec_max, it_max = power_method_max(
-        Aop, tol=tol, stop_callback=stop_callback, ui_pump=ui_pump
+        Aop,
+        tol=tol,
+        stop_callback=stop_callback,
+        ui_pump=ui_pump,
     )
 
     lam_min, vec_min, it_min = power_method_min_via_shift(
-        n, tol=tol, stop_callback=stop_callback, ui_pump=ui_pump
+        n,
+        tol=tol,
+        stop_callback=stop_callback,
+        ui_pump=ui_pump,
     )
 
     return lam_min, lam_max, it_min, it_max
