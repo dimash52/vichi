@@ -547,8 +547,6 @@ def power_method_min_via_shift(
     return lam_min, vec_B, it_B
 
 
-# Находит оценки минимального и максимального собственных значений матрицы A.
-#
 # lambda_max ищется напрямую степенным методом.
 # lambda_min ищется через сдвинутый оператор B = I - tau A.
 def extreme_eigenvalues(n, tol=1e-12, stop_callback=None, ui_pump=None):
